@@ -1,0 +1,13 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# rsconnect deployment metadata (machine-specific)
+rsconnect/
+
+# OS cruft
+.DS_Store
+Thumbs.db

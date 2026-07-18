@@ -1,0 +1,10 @@
+8
+acetic acid CH3-COOH, idealized geometry - non-periodic molecule test case (carboxylate functional group, common MOF linker chemistry)
+C   0.0000   0.0000   0.0000
+C   1.5200   0.0000   0.0000
+O   2.1250   1.0480   0.0000
+O   2.2000  -1.1780   0.0000
+H  -0.3633   1.0277   0.0000
+H  -0.3633  -0.5139   0.8901
+H  -0.3633  -0.5139  -0.8901
+H   2.6980  -1.9750   0.1990

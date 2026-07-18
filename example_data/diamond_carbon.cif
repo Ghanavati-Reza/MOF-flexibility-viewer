@@ -1,0 +1,16 @@
+data_diamond_primitive_cell
+_cell_length_a    2.523
+_cell_length_b    2.523
+_cell_length_c    2.523
+_cell_angle_alpha 60.0
+_cell_angle_beta  60.0
+_cell_angle_gamma 60.0
+
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+C1 C 0.00 0.00 0.00
+C2 C 0.25 0.25 0.25
