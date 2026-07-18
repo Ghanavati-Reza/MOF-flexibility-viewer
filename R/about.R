@@ -21,8 +21,9 @@ about_tab_ui <- fluidRow(
     tags$p(
       "This app implements a portion of the SAVESTEPS protocol for perceiving and typing a MOF's ",
       "(or molecule's) bonds, angles, and dihedrals from an already-optimized geometry, including ",
-      "dihedral rotatable/nonrotatable/linear classification and dihedral-type pruning, plus an ",
-      "interactive 3D structure viewer."
+      "numeric-value type refinement (splitting a type further when instances' bond lengths / angle ",
+      "values / dihedral values actually differ), dihedral rotatable/nonrotatable/linear ",
+      "classification, and dihedral-type pruning, plus an interactive 3D structure viewer."
     ),
     tags$h4("Please cite"),
     tags$blockquote(
@@ -50,7 +51,7 @@ about_tab_ui <- fluidRow(
       tags$tbody(
         step_row("Step 1", "Check the starting structure for misbonded atoms and other chemical errors; reject bad structures.", FALSE),
         step_row("Step 2", "Run a quantum chemistry geometry optimization to get the ground-state structure.", FALSE),
-        step_row("Step 3", "Type atoms (Chen-Manz scheme) and type bonds/angles/dihedrals by atom-type combination.", TRUE),
+        step_row("Step 3", "Type atoms (Chen-Manz scheme); type bonds/angles/dihedrals requiring (i) same atom-type combination, (ii) equilibrium value matching within a tolerance, and (iii) same combination of the lower-level (bond/angle) types.", TRUE),
         step_row("Step 4a", "Classify a dihedral as “linear” when a flanking bond angle is within ~0.03 rad of π.", TRUE),
         step_row("Step 4b", "Add Urey-Bradley stretches for 4-membered ring diagonals; flag angles in 3-/4-membered rings and exclude them from the angle-bending potential; remove dihedrals containing those flagged angles.", FALSE),
         step_row("Step 5", "Classify a dihedral instance as rotatable/nonrotatable by whether its middle bond sits on a ring; a type is nonrotatable if any instance is.", TRUE),

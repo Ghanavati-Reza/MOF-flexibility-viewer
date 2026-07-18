@@ -230,6 +230,18 @@ analyze_structure <- function(struct, tolerance = 1.0) {
 
   typed <- add_type_columns(bonds, angles, dihedrals, atom_types)
   bonds <- typed$bonds; angles <- typed$angles; dihedrals <- typed$dihedrals
+
+  # Numeric-value refinement: split each Chen-Manz type into finer
+  # sub-types by bond length / angle value / dihedral value (see
+  # numeric_subtyping.R). Must run in this order (bonds -> angles ->
+  # dihedrals) since each level looks up its flanking lower-level
+  # sub-types, and must run before rotatability classification and
+  # pruning so those operate on the refined types -- this is the actual
+  # step order in the original pipeline.
+  bonds <- split_bonds_by_length(bonds)
+  angles <- split_angles_by_value(angles, bonds)
+  dihedrals <- split_dihedrals_by_value(dihedrals, angles)
+
   dihedrals <- classify_dihedral_rotatability(dihedrals, neighbor_list)
 
   bond_types_summary <- summarize_types(bonds, "bond_type", "distance", extra_cols = "bond")
