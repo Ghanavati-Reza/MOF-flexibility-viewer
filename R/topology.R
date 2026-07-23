@@ -231,43 +231,101 @@ analyze_structure <- function(struct, tolerance = 1.0) {
   typed <- add_type_columns(bonds, angles, dihedrals, atom_types)
   bonds <- typed$bonds; angles <- typed$angles; dihedrals <- typed$dihedrals
 
+  # 3-/4-membered ring detection (paper Step 4): flag which angles sit in a
+  # 3- or 4-membered ring, build Urey-Bradley diagonal stretches for each
+  # 4-ring, and flag which dihedrals contain a ring-flagged angle. Ring-
+  # flagged angles / ring-excluded dihedrals are kept in the full tables
+  # (flagged, for transparency) but excluded from the "active" set used for
+  # numeric-value refinement, type summaries, and pruning below.
+  if (nrow(angles) > 0) {
+    ring3 <- find_3_member_rings(angles, neighbor_list)
+    ring4 <- find_4_member_rings(angles)
+    angles$ring_flag <- ifelse(ring3, 3L, ifelse(ring4$is_4ring, 4L, 0L))
+    angles$ring_label <- c("None", "3-membered", "4-membered")[match(angles$ring_flag, c(0L, 3L, 4L))]
+    ub_bonds <- build_ub_bonds(ring4$rings, bonds, coords, lattice, elements, atom_types)
+  } else {
+    ub_bonds <- data.frame()
+  }
+  if (nrow(dihedrals) > 0) {
+    dihedrals$ring_excluded <- compute_dihedral_ring_exclusion(dihedrals, angles)
+  }
+
   # Numeric-value refinement: split each Chen-Manz type into finer
   # sub-types by bond length / angle value / dihedral value (see
-  # numeric_subtyping.R). Must run in this order (bonds -> angles ->
-  # dihedrals) since each level looks up its flanking lower-level
-  # sub-types, and must run before rotatability classification and
-  # pruning so those operate on the refined types -- this is the actual
-  # step order in the original pipeline.
+  # numeric_subtyping.R), applied only to the active (non-ring-excluded)
+  # rows. Must run in this order (bonds -> angles -> dihedrals) since each
+  # level looks up its flanking lower-level sub-types, and must run before
+  # rotatability classification and pruning so those operate on the
+  # refined types -- this is the actual step order in the original
+  # pipeline.
   bonds <- split_bonds_by_length(bonds)
-  angles <- split_angles_by_value(angles, bonds)
-  dihedrals <- split_dihedrals_by_value(dihedrals, angles)
+  active_angle_idx <- if (nrow(angles) > 0) which(angles$ring_flag == 0) else integer(0)
+  active_dihedral_idx <- if (nrow(dihedrals) > 0) which(!dihedrals$ring_excluded) else integer(0)
+  if (length(active_angle_idx) > 0) {
+    angles[active_angle_idx, ] <- split_angles_by_value(angles[active_angle_idx, , drop = FALSE], bonds)
+  }
+  if (length(active_dihedral_idx) > 0) {
+    dihedrals[active_dihedral_idx, ] <- split_dihedrals_by_value(dihedrals[active_dihedral_idx, , drop = FALSE], angles)
+  }
 
   dihedrals <- classify_dihedral_rotatability(dihedrals, neighbor_list)
 
+  angles_active <- if (nrow(angles) > 0) angles[angles$ring_flag == 0, , drop = FALSE] else angles
+  dihedrals_active <- if (nrow(dihedrals) > 0) dihedrals[!dihedrals$ring_excluded, , drop = FALSE] else dihedrals
+
   bond_types_summary <- summarize_types(bonds, "bond_type", "distance", extra_cols = "bond")
-  angle_types_summary <- summarize_types(angles, "angle_type", "angle_deg", extra_cols = "angle_label")
-  dihedral_types_summary <- summarize_types(dihedrals, "dihedral_type", "dihedral_deg",
-                                             extra_cols = c("dihedral_label", "rotatability"))
+  angle_types_summary <- summarize_types(angles_active, "angle_type", "angle_deg", extra_cols = "angle_label")
+  dihedral_types_summary <- summarize_types(dihedrals_active, "dihedral_type", "dihedral_deg",
+                                             extra_cols = c("dihedral_label", "rotatability"), abs_mean = TRUE)
+
+  # Rotatable -> Hindered reclassification (paper Step 8, connectivity-check
+  # only -- see hindered.R): must run with dihedral_types_summary already
+  # built (need Type strings + each type's current rotatability) but before
+  # attach_type_index, since that's keyed by string match, not the numeric
+  # index computed next.
+  bonds_minimal <- bonds[, c("atom1", "atom2", "img_a", "img_b", "img_c", "distance")]
+  hindered_types <- check_hindered_dihedral_types(dihedrals_active, dihedral_types_summary, elements, coords,
+                                                   lattice, neighbor_list, atom_types, tolerance, bonds_minimal)
+  if (length(hindered_types) > 0) {
+    dihedral_types_summary$rotatability[dihedral_types_summary$Type %in% hindered_types] <- "Hindered"
+    dihedrals$rotatability[dihedrals$dihedral_type %in% hindered_types] <- "Hindered"
+  }
 
   bonds <- attach_type_index(bonds, "bond_type", bond_types_summary, "bond_type_index")
   angles <- attach_type_index(angles, "angle_type", angle_types_summary, "angle_type_index")
   dihedrals <- attach_type_index(dihedrals, "dihedral_type", dihedral_types_summary, "dihedral_type_index")
 
   # group instances by type (Type # ascending) so all bond_type 1 rows come
-  # first, then all bond_type 2 rows, etc. -- same for angles/dihedrals
+  # first, then all bond_type 2 rows, etc. -- same for angles/dihedrals.
+  # Ring-excluded rows have no type index (NA) and sort last.
   if (!is.null(bonds) && nrow(bonds) > 0) bonds <- bonds[order(bonds$bond_type_index), ]
-  if (!is.null(angles) && nrow(angles) > 0) angles <- angles[order(angles$angle_type_index), ]
-  if (!is.null(dihedrals) && nrow(dihedrals) > 0) dihedrals <- dihedrals[order(dihedrals$dihedral_type_index), ]
+  if (!is.null(angles) && nrow(angles) > 0) angles <- angles[order(angles$angle_type_index, na.last = TRUE), ]
+  if (!is.null(dihedrals) && nrow(dihedrals) > 0) dihedrals <- dihedrals[order(dihedrals$dihedral_type_index, na.last = TRUE), ]
 
-  pruned <- apply_dihedral_pruning(dihedrals, dihedral_types_summary)
+  # Double-counted-image removal (see dedup_instances.R): within each type,
+  # collapse instances that involve the same atom numbers (dihedrals: same
+  # or reverse order) down to one representative. Bonds dedup only ever
+  # removes literal exact-duplicate rows (see file header); dihedral dedup
+  # is the one that matters in practice. Pruning runs on the deduplicated
+  # dihedral set.
+  bonds_dedup_result <- dedupe_bonds(bonds)
+  bonds_deduplicated <- bonds_dedup_result$deduped
+
+  dihedrals_active_final <- if (nrow(dihedrals) > 0) dihedrals[!dihedrals$ring_excluded, , drop = FALSE] else dihedrals
+  dihedrals_dedup_result <- dedupe_dihedrals(dihedrals_active_final)
+  dihedrals_deduplicated <- dihedrals_dedup_result$deduped
+
+  pruned <- apply_dihedral_pruning(dihedrals_deduplicated, dihedral_types_summary)
 
   list(
     elements = elements, coords = coords, lattice = lattice, name = struct$name,
     atom_types = atom_types, bonds = bonds, angles = angles, dihedrals = dihedrals,
+    ub_bonds = ub_bonds,
     neighbor_list = neighbor_list,
     bond_types_summary = bond_types_summary,
     angle_types_summary = angle_types_summary,
     dihedral_types_summary = dihedral_types_summary,
+    bonds_deduplicated = bonds_deduplicated,
     dihedrals_pruned = pruned$dihedrals_pruned,
     dihedral_types_summary_pruned = pruned$dihedral_types_summary_pruned
   )

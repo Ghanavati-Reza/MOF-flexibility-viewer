@@ -159,7 +159,13 @@ classify_dihedral_rotatability <- function(dihedrals, neighbor_list) {
 # instances. Instance tables carry a matching *_type_index column (see
 # attach_type_index()) so a row in the Bonds/Angles/Dihedrals table can be
 # cross-referenced directly against its Bond/Angle/Dihedral Type row.
-summarize_types <- function(df, type_col, value_col, extra_cols = character(0)) {
+#
+# abs_mean = TRUE reports mean(abs(value)) instead of mean(value) -- needed
+# for dihedrals, where +60/-60 (say) are the same physical torsion measured
+# from opposite ends and a raw mean can cancel out to a near-meaningless
+# value near 0. Min/Max stay signed either way, so the true range is still
+# visible.
+summarize_types <- function(df, type_col, value_col, extra_cols = character(0), abs_mean = FALSE) {
   if (is.null(df) || nrow(df) == 0) return(data.frame())
   types <- unique(df[[type_col]])
   rows <- lapply(types, function(ty) {
@@ -168,7 +174,7 @@ summarize_types <- function(df, type_col, value_col, extra_cols = character(0)) 
     base <- data.frame(
       Type = ty,
       Count = nrow(sub),
-      Mean = round(mean(vals), 3),
+      Mean = round(if (abs_mean) mean(abs(vals)) else mean(vals), 3),
       Min = round(min(vals), 3),
       Max = round(max(vals), 3)
     )

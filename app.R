@@ -27,6 +27,7 @@
 library(shiny)
 library(rgl)
 library(DT)
+library(openxlsx)
 
 options(rgl.useNULL = TRUE) # never try to open a real OS window; render to the browser only
 
@@ -58,7 +59,10 @@ ui <- fluidPage(
         "Diamond (CIF, 3D periodic)" = "diamond",
         "Graphene sheet (XYZ+lattice, 2D periodic)" = "graphene",
         "Zn-N2 pcu MOF-like net (POSCAR, 3D periodic)" = "zn_mof",
-        "JIVFUQ: real Zn-phosphonate MOF (XYZ+lattice, 3D periodic)" = "jivfuq"
+        "JIVFUQ: real Zn-phosphonate MOF (XYZ+lattice, 3D periodic)" = "jivfuq",
+        "Cyclopropane (XYZ molecule, genuine 3-membered ring)" = "cyclopropane",
+        "Cyclobutane (XYZ molecule, genuine 4-membered ring)" = "cyclobutane",
+        "XORGUI: real Cd-bipyridine MOF with a hindered dihedral (XYZ+lattice, 3D periodic)" = "xorgui"
       )),
       sliderInput("tolerance", "Bond distance tolerance (× sum of atomic radii)",
                   min = 0.7, max = 1.5, value = 1.0, step = 0.05),
@@ -68,10 +72,17 @@ ui <- fluidPage(
       hr(),
       uiOutput("summary_box"),
       hr(),
+      downloadButton("dl_excel_all", "Download All (Excel)", class = "btn-success"),
+      helpText("One .xlsx workbook with every table below as its own sheet",
+               "(Bonds, Angles, Dihedrals, Atom/Bond/Angle/Dihedral Types,",
+               "Urey-Bradley Diagonals, and the Deduplicated/Pruned variants)."),
+      hr(),
       downloadButton("dl_bonds", "Bonds CSV"),
       downloadButton("dl_angles", "Angles CSV"),
       downloadButton("dl_dihedrals", "Dihedrals CSV"),
       downloadButton("dl_dihedrals_pruned", "Dihedrals (Pruned) CSV"),
+      downloadButton("dl_ub_bonds", "Urey-Bradley Diagonals CSV"),
+      downloadButton("dl_bonds_dedup", "Bonds (Deduplicated) CSV"),
       hr(),
       helpText(tags$b("Note:"), "types are first grouped by atom-type combination,",
                "then split further into numbered sub-types (\"#1\", \"#2\", ...)",
@@ -84,6 +95,16 @@ ui <- fluidPage(
                "sit on the exact same set of middle bonds as another type -- only",
                "one representative type is needed per physical bond, chosen for",
                "having the least near-linear (most well-defined) flanking angles."),
+      helpText(tags$b("Deduplication:"), "the \"(Deduplicated)\" tabs collapse instances",
+               "that involve the same atom numbers (dihedrals: forward or reverse) down",
+               "to one representative -- these are the same physical interaction viewed",
+               "through a different periodic image, so only one is needed for parameter",
+               "fitting. Pruning runs on the deduplicated dihedral set."),
+      helpText(tags$b("Hindered:"), "for each Rotatable dihedral type, the smaller branch",
+               "hanging off the middle bond is rotated in 10° steps through a full",
+               "circle and re-typed at each step; if any step would break or form a",
+               "bond, the type is reclassified Hindered. This can take up to a minute",
+               "for structures with several freely-checkable rotatable groups."),
       hr(),
       helpText(tags$b("Please cite:"), tags$br(),
                "Ghanavati, R.; Escobosa, A.C.; Manz, T.A. An automated protocol to",
@@ -113,6 +134,8 @@ ui <- fluidPage(
         tabPanel("Bond Types", DTOutput("bond_types_table")),
         tabPanel("Angle Types", DTOutput("angle_types_table")),
         tabPanel("Dihedral Types", DTOutput("dihedral_types_table")),
+        tabPanel("Urey-Bradley Diagonals", DTOutput("ub_bonds_table")),
+        tabPanel("Bonds (Deduplicated)", DTOutput("bonds_dedup_table")),
         tabPanel("Dihedrals (Pruned)", DTOutput("dihedrals_pruned_table")),
         tabPanel("Dihedral Types (Pruned)", DTOutput("dihedral_types_pruned_table")),
         tabPanel("About", about_tab_ui)
@@ -135,7 +158,10 @@ server <- function(input, output, session) {
         diamond     = list(file = "diamond_carbon.cif",         fmt = "cif"),
         graphene    = list(file = "graphene_sheet.xyz",         fmt = "xyz_lattice"),
         zn_mof      = list(file = "POSCAR_Zn_N2_pcu_mof",       fmt = "poscar"),
-        jivfuq      = list(file = "JIVFUQ.xyz",                 fmt = "xyz_lattice")
+        jivfuq      = list(file = "JIVFUQ.xyz",                 fmt = "xyz_lattice"),
+        cyclopropane = list(file = "cyclopropane.xyz",          fmt = "xyz_plain"),
+        cyclobutane  = list(file = "cyclobutane.xyz",           fmt = "xyz_plain"),
+        xorgui       = list(file = "XORGUI.xyz",                fmt = "xyz_lattice")
       )
       ex <- example_map[[input$example_choice]]
       path <- file.path(getwd(), "example_data", ex$file)
@@ -157,7 +183,7 @@ server <- function(input, output, session) {
       )
       req(struct)
 
-      incProgress(0.3, message = "Finding bonds, angles & dihedrals...")
+      incProgress(0.3, message = "Finding bonds, angles & dihedrals (checking rotatable dihedrals for hindered rotation can take up to a minute)...")
       res <- tryCatch(
         analyze_structure(struct, tolerance = input$tolerance),
         error = function(e) {
@@ -193,95 +219,66 @@ server <- function(input, output, session) {
 
   output$bonds_table <- renderDT({
     res <- analysis(); req(res)
-    if (is.null(res$bonds) || nrow(res$bonds) == 0) return(datatable(data.frame(Message = "No bonds found")))
-    df <- res$bonds[, c("atom1", "element1", "image1", "atom2", "element2", "image2",
-                         "bond", "distance", "bond_type_index", "bond_type")]
-    colnames(df) <- c("Atom 1 #", "Elem 1", "Image 1", "Atom 2 #", "Elem 2", "Image 2",
-                       "Bond", "Distance (Å)", "Type #", "Bond Type")
-    datatable(df, filter = "top", options = list(pageLength = 15))
+    datatable(export_bonds(res), filter = "top", options = list(pageLength = 15))
   })
 
   output$angles_table <- renderDT({
     res <- analysis(); req(res)
-    if (is.null(res$angles) || nrow(res$angles) == 0) return(datatable(data.frame(Message = "No angles found")))
-    df <- res$angles[, c("atom1", "element1", "image1", "atom2", "element2", "image2",
-                          "atom3", "element3", "image3",
-                          "angle_label", "angle_deg", "angle_type_index", "angle_type")]
-    colnames(df) <- c("Atom 1 #", "Elem 1", "Image 1", "Atom 2 (center) #", "Elem 2", "Image 2",
-                       "Atom 3 #", "Elem 3", "Image 3",
-                       "Angle", "Angle (deg)", "Type #", "Angle Type")
-    datatable(df, filter = "top", options = list(pageLength = 15))
+    datatable(export_angles(res), filter = "top", options = list(pageLength = 15))
   })
 
   output$dihedrals_table <- renderDT({
     res <- analysis(); req(res)
-    if (is.null(res$dihedrals) || nrow(res$dihedrals) == 0) return(datatable(data.frame(Message = "No dihedrals found")))
-    df <- res$dihedrals[, c("atom1", "element1", "image1", "atom2", "element2", "image2",
-                             "atom3", "element3", "image3", "atom4", "element4", "image4",
-                             "dihedral_label", "dihedral_deg", "dihedral_type_index", "dihedral_type", "rotatability")]
-    colnames(df) <- c("Atom 1 #", "Elem 1", "Image 1", "Atom 2 #", "Elem 2", "Image 2",
-                       "Atom 3 #", "Elem 3", "Image 3", "Atom 4 #", "Elem 4", "Image 4",
-                       "Dihedral", "Dihedral (deg)", "Type #", "Dihedral Type", "Rotatability")
-    datatable(df, filter = "top", options = list(pageLength = 15))
+    datatable(export_dihedrals(res), filter = "top", options = list(pageLength = 15))
   })
 
   output$atom_types_table <- renderDT({
     res <- analysis(); req(res)
-    df <- data.frame(Atom = seq_along(res$elements), Element = res$elements, `Chen-Manz atom type` = res$atom_types,
-                      check.names = FALSE)
-    datatable(df, filter = "top", options = list(pageLength = 20))
+    datatable(export_atom_types(res), filter = "top", options = list(pageLength = 20))
   })
 
   output$bond_types_table <- renderDT({
     res <- analysis(); req(res)
-    if (is.null(res$bond_types_summary) || nrow(res$bond_types_summary) == 0)
-      return(datatable(data.frame(Message = "No bonds found")))
-    df <- res$bond_types_summary[, c("Index", "bond", "Type", "Count", "Mean", "Min", "Max")]
-    colnames(df) <- c("Type #", "Elements", "Bond Type", "Count", "Mean Distance (Å)", "Min (Å)", "Max (Å)")
-    datatable(df, filter = "top", options = list(pageLength = 15))
+    datatable(export_bond_types(res), filter = "top", options = list(pageLength = 15))
   })
 
   output$angle_types_table <- renderDT({
     res <- analysis(); req(res)
-    if (is.null(res$angle_types_summary) || nrow(res$angle_types_summary) == 0)
-      return(datatable(data.frame(Message = "No angles found")))
-    df <- res$angle_types_summary[, c("Index", "angle_label", "Type", "Count", "Mean", "Min", "Max")]
-    colnames(df) <- c("Type #", "Elements", "Angle Type", "Count", "Mean Angle (deg)", "Min (deg)", "Max (deg)")
-    datatable(df, filter = "top", options = list(pageLength = 15))
+    datatable(export_angle_types(res), filter = "top", options = list(pageLength = 15))
   })
 
   output$dihedral_types_table <- renderDT({
     res <- analysis(); req(res)
-    if (is.null(res$dihedral_types_summary) || nrow(res$dihedral_types_summary) == 0)
-      return(datatable(data.frame(Message = "No dihedrals found")))
-    df <- res$dihedral_types_summary[, c("Index", "dihedral_label", "Type", "Count", "Mean", "Min", "Max", "rotatability")]
-    colnames(df) <- c("Type #", "Elements", "Dihedral Type", "Count", "Mean Dihedral (deg)", "Min (deg)", "Max (deg)", "Rotatability")
-    datatable(df, filter = "top", options = list(pageLength = 15))
+    datatable(export_dihedral_types(res), filter = "top", options = list(pageLength = 15))
+  })
+
+  output$ub_bonds_table <- renderDT({
+    res <- analysis(); req(res)
+    datatable(export_ub_bonds(res), filter = "top", options = list(pageLength = 15))
+  })
+
+  output$bonds_dedup_table <- renderDT({
+    res <- analysis(); req(res)
+    datatable(export_bonds_dedup(res), filter = "top", options = list(pageLength = 15))
   })
 
   output$dihedrals_pruned_table <- renderDT({
     res <- analysis(); req(res)
-    if (is.null(res$dihedrals_pruned) || nrow(res$dihedrals_pruned) == 0)
-      return(datatable(data.frame(Message = "No dihedrals found")))
-    df <- res$dihedrals_pruned[, c("atom1", "element1", "image1", "atom2", "element2", "image2",
-                                    "atom3", "element3", "image3", "atom4", "element4", "image4",
-                                    "dihedral_label", "dihedral_deg", "dihedral_type_index", "dihedral_type", "rotatability")]
-    colnames(df) <- c("Atom 1 #", "Elem 1", "Image 1", "Atom 2 #", "Elem 2", "Image 2",
-                       "Atom 3 #", "Elem 3", "Image 3", "Atom 4 #", "Elem 4", "Image 4",
-                       "Dihedral", "Dihedral (deg)", "Type #", "Dihedral Type", "Rotatability")
-    datatable(df, filter = "top", options = list(pageLength = 15))
+    datatable(export_dihedrals_pruned(res), filter = "top", options = list(pageLength = 15))
   })
 
   output$dihedral_types_pruned_table <- renderDT({
     res <- analysis(); req(res)
-    if (is.null(res$dihedral_types_summary_pruned) || nrow(res$dihedral_types_summary_pruned) == 0)
-      return(datatable(data.frame(Message = "No dihedrals found")))
-    df <- res$dihedral_types_summary_pruned[, c("Index", "dihedral_label", "Type", "Count", "Mean", "Min", "Max",
-                                                  "rotatability", "Merged")]
-    colnames(df) <- c("Type #", "Elements", "Dihedral Type", "Count", "Mean Dihedral (deg)", "Min (deg)", "Max (deg)",
-                       "Rotatability", "Redundant Types Merged")
-    datatable(df, filter = "top", options = list(pageLength = 15))
+    datatable(export_dihedral_types_pruned(res), filter = "top", options = list(pageLength = 15))
   })
+
+  output$dl_excel_all <- downloadHandler(
+    filename = function() paste0(analysis()$name, "_all_tables.xlsx"),
+    content = function(file) {
+      res <- analysis()
+      openxlsx::write.xlsx(build_export_workbook_sheets(res), file)
+    }
+  )
 
   output$dl_bonds <- downloadHandler(
     filename = function() paste0(analysis()$name, "_bonds.csv"),
@@ -298,6 +295,14 @@ server <- function(input, output, session) {
   output$dl_dihedrals_pruned <- downloadHandler(
     filename = function() paste0(analysis()$name, "_dihedrals_pruned.csv"),
     content = function(file) write.csv(analysis()$dihedrals_pruned, file, row.names = FALSE)
+  )
+  output$dl_ub_bonds <- downloadHandler(
+    filename = function() paste0(analysis()$name, "_urey_bradley_diagonals.csv"),
+    content = function(file) write.csv(analysis()$ub_bonds, file, row.names = FALSE)
+  )
+  output$dl_bonds_dedup <- downloadHandler(
+    filename = function() paste0(analysis()$name, "_bonds_deduplicated.csv"),
+    content = function(file) write.csv(analysis()$bonds_deduplicated, file, row.names = FALSE)
   )
 }
 
